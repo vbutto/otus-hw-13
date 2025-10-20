@@ -1,4 +1,15 @@
 ########################################
+# Роли для сервисного аккаунта terraform
+# compute.admin
+# iam.serviceAccounts.admin
+# kms.admin
+# resource-manager.admin
+# vpc.admin
+########################################
+
+
+
+########################################
 # СЕРВИСНЫЕ АККАУНТЫ (базовые роли для IaC, S3 и CI/CD)
 ########################################
 
@@ -40,9 +51,10 @@ resource "time_sleep" "after_service_accounts" {
 ########################################
 # КЛЮЧИ ДОСТУПА
 ########################################
-resource "yandex_iam_service_account_static_access_key" "ci_cd_static_key" {
-  service_account_id = yandex_iam_service_account.ci_cd_acc.id
-  description        = "static access key for CI/CD pipelines"
+# Статический ключ именно для S3-админа (storage.admin)
+resource "yandex_iam_service_account_static_access_key" "s3_static_key" {
+  service_account_id = yandex_iam_service_account.s3acc.id
+  description        = "static access key for Object Storage admin (buckets/objects)"
   depends_on         = [time_sleep.after_service_accounts]
 }
 
@@ -62,8 +74,8 @@ resource "yandex_kms_symmetric_key" "lz_kms" {
 ########################################
 resource "yandex_storage_bucket" "lz_logs_bucket" {
   bucket     = "lz-${var.folder_id}-logs" # уникально в YC S3 namespace
-  access_key = yandex_iam_service_account_static_access_key.ci_cd_static_key.access_key
-  secret_key = yandex_iam_service_account_static_access_key.ci_cd_static_key.secret_key
+  access_key = yandex_iam_service_account_static_access_key.s3_static_key.access_key
+  secret_key = yandex_iam_service_account_static_access_key.s3_static_key.secret_key
 
   force_destroy = true # для учебных целей
   versioning {
@@ -78,7 +90,6 @@ resource "yandex_storage_bucket" "lz_logs_bucket" {
 resource "yandex_vpc_network" "lz_vpc" {
   name = "lz-vpc"
 }
-
 
 # Интернет-шлюз (NAT GW managed by YC)
 resource "yandex_vpc_gateway" "internet_gw" {
@@ -141,7 +152,6 @@ resource "yandex_vpc_security_group" "lz_sg_base" {
     protocol       = "TCP"
     port           = 22
     v4_cidr_blocks = ["0.0.0.0/0"]
-    description    = "SSH from Internet (demo)"
   }
 
   # Входящий HTTP
@@ -149,14 +159,12 @@ resource "yandex_vpc_security_group" "lz_sg_base" {
     protocol       = "TCP"
     port           = 80
     v4_cidr_blocks = ["0.0.0.0/0"]
-    description    = "HTTP from Internet (demo)"
   }
 
   # Исходящий трафик в интернет
   egress {
     protocol       = "ANY"
     v4_cidr_blocks = ["0.0.0.0/0"]
-    description    = "egress to Internet"
   }
 }
 
@@ -204,8 +212,6 @@ resource "yandex_resourcemanager_folder_iam_binding" "cr_images_pusher" {
   ]
   depends_on = [time_sleep.after_service_accounts]
 }
-
-
 
 ########################################
 # ОБРАЗ ДЛЯ БАСТИОНА (Ubuntu 22.04 LTS)
@@ -256,6 +262,13 @@ resource "yandex_vpc_address" "bastion_pub_ip" {
 }
 
 ########################################
+# ЛОКАЛЫ: выбор подсети для бастиона по зоне
+########################################
+locals {
+  bastion_subnet_id = var.bastion_zone == "ru-central1-b" ? yandex_vpc_subnet.lz_subnet_b.id : yandex_vpc_subnet.lz_subnet_a.id
+}
+
+########################################
 # ВМ-БАСТИОН
 ########################################
 resource "yandex_compute_instance" "bastion" {
@@ -278,7 +291,7 @@ resource "yandex_compute_instance" "bastion" {
   }
 
   network_interface {
-    subnet_id          = yandex_vpc_subnet.lz_subnet_a.id
+    subnet_id          = local.bastion_subnet_id
     security_group_ids = [yandex_vpc_security_group.lz_sg_bastion.id]
     nat                = true
     nat_ip_address     = yandex_vpc_address.bastion_pub_ip.external_ipv4_address[0].address
@@ -286,7 +299,6 @@ resource "yandex_compute_instance" "bastion" {
 
   metadata = {
     ssh-keys = "${var.ssh_username}:${var.ssh_public_key}"
-
     # user-data = file("cloud-init-bastion.yaml")
   }
 
@@ -296,6 +308,7 @@ resource "yandex_compute_instance" "bastion" {
 
   depends_on = [
     yandex_vpc_subnet.lz_subnet_a,
+    yandex_vpc_subnet.lz_subnet_b,
     yandex_vpc_security_group.lz_sg_bastion
   ]
 }
@@ -317,8 +330,6 @@ output "bastion_ssh_example" {
   value       = "ssh -i ~/.ssh/id_rsa ${var.ssh_username}@${yandex_vpc_address.bastion_pub_ip.external_ipv4_address[0].address}"
   description = "Пример SSH-команды"
 }
-
-
 
 ########################################
 # ВЫВОДЫ (Outputs) — полезные ID/параметры
