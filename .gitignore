@@ -2,6 +2,7 @@
 .terraform/
 *.tfstate
 *.tfstate.*
+.terraform.tfstate.lock.info
 crash.log
 override.tf
 override.tf.json
